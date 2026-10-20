@@ -1,0 +1,835 @@
+// ============================================================================
+// SPORTEO (Team DevGrid) — Unified PostgreSQL + Prisma ORM Schema
+// Course: IS 2901 - Software Development Project (University of Moratuwa, 2026)
+// Client: Enlear (Pvt) LTD | Milestone: 40% Working Prototype (Oct 21, 2026)
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
+}
+
+// ============================================================================
+// ENUMS ACROSS ALL 5 MODULES
+// ============================================================================
+
+enum UserRole {
+  PLAYER
+  COACH
+  CLUB_MANAGER
+  VENUE_OWNER
+  SYSTEM_ADMIN
+}
+
+enum SportType {
+  CRICKET
+  RUGBY
+  FOOTBALL
+  BADMINTON
+}
+
+enum SkillLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  ELITE
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+
+enum AgeBracket {
+  AGE_8_12
+  AGE_13_19
+  AGE_20_PLUS
+}
+
+enum CourseStatus {
+  OPEN
+  FULL
+  COMPLETED
+  CANCELLED
+}
+
+enum SessionStatus {
+  SCHEDULED
+  RESCHEDULE_PENDING
+  RESCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum ReservationStatus {
+  HELD
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum MatchInviteStatus {
+  PENDING_ACCEPTANCE
+  CONFIRMED_SCHEDULED
+  DECLINED
+  CANCELLED
+}
+
+enum BookingSourceType {
+  COACHING_COURSE
+  COACHING_SESSION
+  VENUE_RESERVATION
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  FAILED
+}
+
+// ============================================================================
+// MODULE 1: N G Rangodage (245082F)
+// User Access, NIC Verification & Club Management
+// ============================================================================
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  fullName     String   @map("full_name") @db.VarChar(150)
+  phone        String   @db.VarChar(25)
+  role         UserRole @default(PLAYER)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // Module 1 Relations
+  playerProfile        PlayerProfile?
+  managedClubs         SportsClub[]                @relation("ClubManager")
+  reviewedVerifications NicVerification[]          @relation("AdminVerifier")
+  reviewedClubApps     ClubMembershipApplication[] @relation("ManagerReviewer")
+
+  // Module 2 Relations
+  coachProfile         CoachProfile?
+  proposedReschedules  RescheduleProposal[]
+
+  // Module 3 Relations
+  ownedVenues          Venue[]                     @relation("VenueOwner")
+  venueReservations    VenueReservation[]
+
+  // Module 4 Relations
+  uploadedDocs         KnowledgeDocument[]
+  chatConversations    ChatConversation[]
+  chatFeedbacks        ChatFeedback[]
+  notifications        Notification[]
+  notificationPref     NotificationPreference?
+
+  // Module 5 Relations
+  payerOrders          PaymentOrder[]              @relation("PayerOrders")
+  providerOrders       PaymentOrder[]              @relation("ProviderOrders")
+  commissionLedgers    CommissionLedgerEntry[]
+  loyaltyAccount       LoyaltyAccount?
+  updatedCommConfigs   CommissionConfig[]
+
+  @@map("users")
+}
+
+model PlayerProfile {
+  id            String     @id @default(uuid()) @db.Uuid
+  userId        String     @unique @map("user_id") @db.Uuid
+  dateOfBirth   DateTime   @map("date_of_birth") @db.Date
+  nicNumber     String     @unique @map("nic_number") @db.VarChar(20)
+  primarySport  SportType  @map("primary_sport")
+  skillLevel    SkillLevel @default(BEGINNER) @map("skill_level")
+  isNicVerified Boolean    @default(false) @map("is_nic_verified")
+
+  user             User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nicVerifications NicVerification[]
+  clubApplications ClubMembershipApplication[]
+  rosterMemberships ClubRosterMember[]
+
+  // Module 2 & 4 Cross-Module Relations
+  courseEnrollments  CourseEnrollment[]
+  coachingSessions   CoachingSession[]
+  sessionAttendances SessionAttendance[]
+  coachReviews       CoachReview[]
+  savedCoaches       SavedCoach[]
+  searchLogs         CoachSearchLog[]
+
+  @@map("player_profiles")
+}
+
+model NicVerification {
+  id                String             @id @default(uuid()) @db.Uuid
+  playerProfileId   String             @map("player_profile_id") @db.Uuid
+  s3FrontKey        String             @map("s3_front_key") @db.VarChar(500)
+  s3BackKey         String             @map("s3_back_key") @db.VarChar(500)
+  status            VerificationStatus @default(PENDING)
+  reviewedByAdminId String?            @map("reviewed_by_admin_id") @db.Uuid
+  reviewNotes       String?            @map("review_notes") @db.Text
+  submittedAt       DateTime           @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  reviewedAt        DateTime?          @map("reviewed_at") @db.Timestamptz(6)
+
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?         @relation("AdminVerifier", fields: [reviewedByAdminId], references: [id])
+
+  @@index([status, submittedAt])
+  @@map("nic_verifications")
+}
+
+model SportsClub {
+  id             String   @id @default(uuid()) @db.Uuid
+  managerUserId  String   @map("manager_user_id") @db.Uuid
+  clubName       String   @map("club_name") @db.VarChar(150)
+  registrationNo String   @unique @map("registration_no") @db.VarChar(60)
+  address        String   @db.Text
+  district       String   @db.VarChar(80)
+  latitude       Decimal  @db.Decimal(9, 6)
+  longitude      Decimal  @db.Decimal(9, 6)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  manager          User                        @relation("ClubManager", fields: [managerUserId], references: [id])
+  sportsOffered    ClubSport[]
+  applications     ClubMembershipApplication[]
+  rosterMembers    ClubRosterMember[]
+  coachRecruitments CoachRecruitmentRequest[]
+
+  // Module 3 Cross-Module Relations
+  venueReservations     VenueReservation[]
+  hostedMatchInvites    InterClubMatchInvitation[] @relation("HostClub")
+  visitingMatchInvites  InterClubMatchInvitation[] @relation("VisitingClub")
+
+  @@index([district])
+  @@map("sports_clubs")
+}
+
+model ClubSport {
+  id        String    @id @default(uuid()) @db.Uuid
+  clubId    String    @map("club_id") @db.Uuid
+  sportName SportType @map("sport_name")
+
+  club SportsClub @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, sportName])
+  @@map("club_sports")
+}
+
+model ClubMembershipApplication {
+  id                  String            @id @default(uuid()) @db.Uuid
+  clubId              String            @map("club_id") @db.Uuid
+  playerProfileId     String            @map("player_profile_id") @db.Uuid
+  preferredSport      SportType         @map("preferred_sport")
+  playingPosition     String            @map("playing_position") @db.VarChar(80)
+  experienceSummary   String?           @map("experience_summary") @db.Text
+  status              ApplicationStatus @default(PENDING)
+  reviewedByManagerId String?           @map("reviewed_by_manager_id") @db.Uuid
+  appliedAt           DateTime          @default(now()) @map("applied_at") @db.Timestamptz(6)
+  decidedAt           DateTime?         @map("decided_at") @db.Timestamptz(6)
+
+  club              SportsClub    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  playerProfile     PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  reviewedByManager User?         @relation("ManagerReviewer", fields: [reviewedByManagerId], references: [id])
+
+  @@unique([clubId, playerProfileId, preferredSport])
+  @@index([clubId, status])
+  @@map("club_membership_applications")
+}
+
+model ClubRosterMember {
+  id              String    @id @default(uuid()) @db.Uuid
+  clubId          String    @map("club_id") @db.Uuid
+  playerProfileId String    @map("player_profile_id") @db.Uuid
+  sportName       SportType @map("sport_name")
+  squadRole       String    @map("squad_role") @db.VarChar(80)
+  jerseyNumber    Int?      @map("jersey_number")
+  isActiveMember  Boolean   @default(true) @map("is_active_member")
+  joinedAt        DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  club          SportsClub    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  playerProfile PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, playerProfileId, sportName])
+  @@index([clubId, isActiveMember])
+  @@map("club_roster_members")
+}
+
+model CoachRecruitmentRequest {
+  id             String            @id @default(uuid()) @db.Uuid
+  clubId         String            @map("club_id") @db.Uuid
+  coachProfileId String            @map("coach_profile_id") @db.Uuid
+  proposedRole   String            @map("proposed_role") @db.VarChar(100)
+  status         ApplicationStatus @default(PENDING)
+  invitedAt      DateTime          @default(now()) @map("invited_at") @db.Timestamptz(6)
+  respondedAt    DateTime?         @map("responded_at") @db.Timestamptz(6)
+
+  club         SportsClub   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  coachProfile CoachProfile @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+
+  @@map("coach_recruitment_requests")
+}
+
+// ============================================================================
+// MODULE 2: JBAN Lakvindu (245128E)
+// Coaching Services, Courses & Session Scheduling
+// ============================================================================
+
+model CoachProfile {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  bio             String   @db.Text
+  yearsExperience Int      @map("years_experience")
+  hourlyRateLkr   Decimal  @map("hourly_rate_lkr") @db.Decimal(10, 2)
+  city            String   @db.VarChar(100)
+  district        String   @db.VarChar(80)
+  latitude        Decimal  @db.Decimal(9, 6)
+  longitude       Decimal  @db.Decimal(9, 6)
+  averageRating   Decimal  @default(0.00) @map("average_rating") @db.Decimal(3, 2)
+  reviewCount     Int      @default(0) @map("review_count")
+
+  user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  qualifications          CoachQualification[]
+  specializations         CoachSpecialization[]
+  recurringAvailabilities RecurringAvailability[]
+  courses                 CoachingCourse[]
+  sessions                CoachingSession[]
+  reviews                 CoachReview[]
+
+  // Module 1 & 4 Cross-Module Relations
+  clubRecruitmentRequests CoachRecruitmentRequest[]
+  savedByPlayers          SavedCoach[]
+  topSearchMatches        CoachSearchLog[]
+
+  @@index([district, hourlyRateLkr])
+  @@map("coach_profiles")
+}
+
+model CoachQualification {
+  id               String  @id @default(uuid()) @db.Uuid
+  coachProfileId   String  @map("coach_profile_id") @db.Uuid
+  title            String  @db.VarChar(200)
+  issuingBody      String  @map("issuing_body") @db.VarChar(150)
+  yearObtained     Int     @map("year_obtained")
+  certificateS3Key String? @map("certificate_s3_key") @db.VarChar(500)
+
+  coachProfile CoachProfile @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+
+  @@map("coach_qualifications")
+}
+
+model CoachSpecialization {
+  id             String     @id @default(uuid()) @db.Uuid
+  coachProfileId String     @map("coach_profile_id") @db.Uuid
+  sportName      SportType  @map("sport_name")
+  focusArea      String     @map("focus_area") @db.VarChar(120)
+  skillLevel     SkillLevel @map("skill_level")
+
+  coachProfile CoachProfile @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+
+  @@index([sportName, skillLevel])
+  @@map("coach_specializations")
+}
+
+model RecurringAvailability {
+  id             String  @id @default(uuid()) @db.Uuid
+  coachProfileId String  @map("coach_profile_id") @db.Uuid
+  dayOfWeek      Int     @map("day_of_week") @db.SmallInt // 0=Sunday .. 6=Saturday
+  startTime      String  @map("start_time") @db.VarChar(5) // "HH:MM" 24-hour format
+  endTime        String  @map("end_time") @db.VarChar(5)   // "HH:MM" 24-hour format
+  isActive       Boolean @default(true) @map("is_active")
+
+  coachProfile CoachProfile @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+
+  @@index([coachProfileId, dayOfWeek, isActive])
+  @@map("recurring_availabilities")
+}
+
+model CoachingCourse {
+  id                String       @id @default(uuid()) @db.Uuid
+  coachProfileId    String       @map("coach_profile_id") @db.Uuid
+  title             String       @db.VarChar(180)
+  sportName         SportType    @map("sport_name")
+  ageBracket        AgeBracket   @map("age_bracket")
+  skillLevel        SkillLevel   @map("skill_level")
+  courseFeeLkr      Decimal      @map("course_fee_lkr") @db.Decimal(10, 2)
+  maxCapacity       Int          @map("max_capacity")
+  currentEnrollment Int          @default(0) @map("current_enrollment")
+  startDate         DateTime     @map("start_date") @db.Date
+  endDate           DateTime     @map("end_date") @db.Date
+  dayOfWeek         Int          @map("day_of_week") @db.SmallInt
+  startTime         String       @map("start_time") @db.VarChar(5)
+  endTime           String       @map("end_time") @db.VarChar(5)
+  status            CourseStatus @default(OPEN)
+
+  coachProfile CoachProfile       @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+  enrollments  CourseEnrollment[]
+
+  @@index([sportName, ageBracket, status])
+  @@map("coaching_courses")
+}
+
+model CourseEnrollment {
+  id              String   @id @default(uuid()) @db.Uuid
+  courseId        String   @map("course_id") @db.Uuid
+  playerProfileId String   @map("player_profile_id") @db.Uuid
+  status          String   @default("ENROLLED") @db.VarChar(20)
+  enrolledAt      DateTime @default(now()) @map("enrolled_at") @db.Timestamptz(6)
+
+  course        CoachingCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  playerProfile PlayerProfile  @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, playerProfileId])
+  @@map("course_enrollments")
+}
+
+model CoachingSession {
+  id              String        @id @default(uuid()) @db.Uuid
+  coachProfileId  String        @map("coach_profile_id") @db.Uuid
+  playerProfileId String        @map("player_profile_id") @db.Uuid
+  sessionDate     DateTime      @map("session_date") @db.Date
+  startTime       String        @map("start_time") @db.VarChar(5) // "HH:MM"
+  endTime         String        @map("end_time") @db.VarChar(5)   // "HH:MM"
+  sessionFeeLkr   Decimal       @map("session_fee_lkr") @db.Decimal(10, 2)
+  status          SessionStatus @default(SCHEDULED)
+
+  coachProfile        CoachProfile         @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+  playerProfile       PlayerProfile        @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  rescheduleProposals RescheduleProposal[]
+  attendance          SessionAttendance?
+  review              CoachReview?
+
+  @@index([coachProfileId, sessionDate, status])
+  @@map("coaching_sessions")
+}
+
+model RescheduleProposal {
+  id                String   @id @default(uuid()) @db.Uuid
+  sessionId         String   @map("session_id") @db.Uuid
+  proposedByUserId  String   @map("proposed_by_user_id") @db.Uuid
+  proposedDate      DateTime @map("proposed_date") @db.Date
+  proposedStartTime String   @map("proposed_start_time") @db.VarChar(5)
+  proposedEndTime   String   @map("proposed_end_time") @db.VarChar(5)
+  reason            String   @db.Text
+  status            String   @default("APPLIED") @db.VarChar(20)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  session    CoachingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  proposedBy User            @relation(fields: [proposedByUserId], references: [id])
+
+  @@map("reschedule_proposals")
+}
+
+model SessionAttendance {
+  id              String   @id @default(uuid()) @db.Uuid
+  sessionId       String   @unique @map("session_id") @db.Uuid
+  playerProfileId String   @map("player_profile_id") @db.Uuid
+  isPresent       Boolean  @map("is_present")
+  coachRemarks    String?  @map("coach_remarks") @db.Text
+  markedAt        DateTime @default(now()) @map("marked_at") @db.Timestamptz(6)
+
+  session       CoachingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerProfile PlayerProfile   @relation(fields: [playerProfileId], references: [id])
+
+  @@map("session_attendances")
+}
+
+model CoachReview {
+  id              String   @id @default(uuid()) @db.Uuid
+  coachProfileId  String   @map("coach_profile_id") @db.Uuid
+  playerProfileId String   @map("player_profile_id") @db.Uuid
+  sessionId       String   @unique @map("session_id") @db.Uuid
+  rating          Int      @db.SmallInt
+  comment         String   @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  coachProfile  CoachProfile    @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+  playerProfile PlayerProfile   @relation(fields: [playerProfileId], references: [id])
+  session       CoachingSession @relation(fields: [sessionId], references: [id])
+
+  @@map("coach_reviews")
+}
+
+// ============================================================================
+// MODULE 3: KPVM Pathirana (245073E)
+// Venue Reservations & Match Coordination
+// ============================================================================
+
+model Venue {
+  id           String   @id @default(uuid()) @db.Uuid
+  ownerUserId  String   @map("owner_user_id") @db.Uuid
+  venueName    String   @map("venue_name") @db.VarChar(150)
+  address      String   @db.Text
+  district     String   @db.VarChar(80)
+  latitude     Decimal  @db.Decimal(9, 6)
+  longitude    Decimal  @db.Decimal(9, 6)
+  contactPhone String   @map("contact_phone") @db.VarChar(25)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  owner          User                  @relation("VenueOwner", fields: [ownerUserId], references: [id])
+  facilityCourts FacilityCourt[]
+  operatingHours VenueOperatingHours[]
+
+  @@index([district])
+  @@map("venues")
+}
+
+model FacilityCourt {
+  id             String    @id @default(uuid()) @db.Uuid
+  venueId        String    @map("venue_id") @db.Uuid
+  courtName      String    @map("court_name") @db.VarChar(120)
+  facilityType   String    @map("facility_type") @db.VarChar(50) // e.g., Turf Pitch, Indoor Court, Pool
+  sportSupported SportType @map("sport_supported")
+  hourlyRateLkr  Decimal   @map("hourly_rate_lkr") @db.Decimal(10, 2)
+  isIndoor       Boolean   @default(false) @map("is_indoor")
+  isActive       Boolean   @default(true) @map("is_active")
+
+  venue               Venue                @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  maintenanceClosures MaintenanceClosure[]
+  reservations        VenueReservation[]
+
+  @@index([sportSupported, isActive])
+  @@map("facility_courts")
+}
+
+model VenueOperatingHours {
+  id        String  @id @default(uuid()) @db.Uuid
+  venueId   String  @map("venue_id") @db.Uuid
+  dayOfWeek Int     @map("day_of_week") @db.SmallInt
+  openTime  String  @map("open_time") @db.VarChar(5)
+  closeTime String  @map("close_time") @db.VarChar(5)
+  isClosed  Boolean @default(false) @map("is_closed")
+
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  @@unique([venueId, dayOfWeek])
+  @@map("venue_operating_hours")
+}
+
+model MaintenanceClosure {
+  id              String   @id @default(uuid()) @db.Uuid
+  facilityCourtId String   @map("facility_court_id") @db.Uuid
+  closureDate     DateTime @map("closure_date") @db.Date
+  startTime       String   @map("start_time") @db.VarChar(5)
+  endTime         String   @map("end_time") @db.VarChar(5)
+  reason          String   @db.VarChar(255)
+
+  facilityCourt FacilityCourt @relation(fields: [facilityCourtId], references: [id], onDelete: Cascade)
+
+  @@index([facilityCourtId, closureDate])
+  @@map("maintenance_closures")
+}
+
+model VenueReservation {
+  id              String            @id @default(uuid()) @db.Uuid
+  facilityCourtId String            @map("facility_court_id") @db.Uuid
+  bookedByUserId  String            @map("booked_by_user_id") @db.Uuid
+  clubId          String?           @map("club_id") @db.Uuid
+  reservationDate DateTime          @map("reservation_date") @db.Date
+  startTime       String            @map("start_time") @db.VarChar(5)
+  endTime         String            @map("end_time") @db.VarChar(5)
+  totalAmountLkr  Decimal           @map("total_amount_lkr") @db.Decimal(10, 2)
+  status          ReservationStatus @default(CONFIRMED)
+  holdExpiresAt   DateTime?         @map("hold_expires_at") @db.Timestamptz(6)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  facilityCourt   FacilityCourt             @relation(fields: [facilityCourtId], references: [id], onDelete: Cascade)
+  bookedByUser    User                      @relation(fields: [bookedByUserId], references: [id])
+  club            SportsClub?               @relation(fields: [clubId], references: [id])
+  matchInvitation InterClubMatchInvitation?
+
+  @@index([facilityCourtId, reservationDate, status])
+  @@map("venue_reservations")
+}
+
+model InterClubMatchInvitation {
+  id                 String            @id @default(uuid()) @db.Uuid
+  hostClubId         String            @map("host_club_id") @db.Uuid
+  visitingClubId     String            @map("visiting_club_id") @db.Uuid
+  venueReservationId String            @unique @map("venue_reservation_id") @db.Uuid
+  sportName          SportType         @map("sport_name")
+  matchTitle         String            @map("match_title") @db.VarChar(180)
+  status             MatchInviteStatus @default(PENDING_ACCEPTANCE)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  respondedAt        DateTime?         @map("responded_at") @db.Timestamptz(6)
+
+  hostClub         SportsClub       @relation("HostClub", fields: [hostClubId], references: [id])
+  visitingClub     SportsClub       @relation("VisitingClub", fields: [visitingClubId], references: [id])
+  venueReservation VenueReservation @relation(fields: [venueReservationId], references: [id])
+
+  @@index([hostClubId, visitingClubId, status])
+  @@map("inter_club_match_invitations")
+}
+
+// ============================================================================
+// MODULE 4: WMSD Weerasingha (245115R)
+// Coach Discovery, Grounded AI Sports Assistant & Notifications
+// ============================================================================
+
+model SavedCoach {
+  id              String   @id @default(uuid()) @db.Uuid
+  playerProfileId String   @map("player_profile_id") @db.Uuid
+  coachProfileId  String   @map("coach_profile_id") @db.Uuid
+  savedAt         DateTime @default(now()) @map("saved_at") @db.Timestamptz(6)
+
+  playerProfile PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  coachProfile  CoachProfile  @relation(fields: [coachProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([playerProfileId, coachProfileId])
+  @@map("saved_coaches")
+}
+
+model CoachSearchLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  playerProfileId String   @map("player_profile_id") @db.Uuid
+  filterPayload   Json     @map("filter_payload")
+  topCoachId      String?  @map("top_coach_id") @db.Uuid
+  topMatchScore   Int?     @map("top_match_score")
+  searchedAt      DateTime @default(now()) @map("searched_at") @db.Timestamptz(6)
+
+  playerProfile PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  topCoach      CoachProfile? @relation(fields: [topCoachId], references: [id])
+
+  @@map("coach_search_logs")
+}
+
+model KnowledgeDocument {
+  id                String     @id @default(uuid()) @db.Uuid
+  title             String     @db.VarChar(200)
+  category          String     @db.VarChar(60)
+  sportName         SportType? @map("sport_name")
+  isApproved        Boolean    @default(true) @map("is_approved")
+  uploadedByAdminId String     @map("uploaded_by_admin_id") @db.Uuid
+  updatedAt         DateTime   @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  uploadedByAdmin User                      @relation(fields: [uploadedByAdminId], references: [id])
+  chunks          KnowledgeChunkEmbedding[]
+
+  @@index([isApproved, sportName])
+  @@map("knowledge_documents")
+}
+
+model KnowledgeChunkEmbedding {
+  id              String                      @id @default(uuid()) @db.Uuid
+  documentId      String                      @map("document_id") @db.Uuid
+  chunkIndex      Int                         @map("chunk_index")
+  chunkText       String                      @map("chunk_text") @db.Text
+  embeddingVector Unsupported("vector(1536)") @map("embedding_vector")
+
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("knowledge_chunk_embeddings")
+}
+
+model ChatConversation {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  startedAt DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@map("chat_conversations")
+}
+
+model ChatMessage {
+  id               String   @id @default(uuid()) @db.Uuid
+  conversationId   String   @map("conversation_id") @db.Uuid
+  senderRole       String   @map("sender_role") @db.VarChar(20) // "USER" | "ASSISTANT"
+  messageText      String   @map("message_text") @db.Text
+  isGrounded       Boolean  @default(true) @map("is_grounded")
+  confidenceScore  Decimal  @map("confidence_score") @db.Decimal(4, 3)
+  citedDocumentIds Json?    @map("cited_document_ids")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  feedback     ChatFeedback?
+
+  @@map("chat_messages")
+}
+
+model ChatFeedback {
+  id        String   @id @default(uuid()) @db.Uuid
+  messageId String   @unique @map("message_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  isHelpful Boolean  @map("is_helpful")
+  comment   String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [userId], references: [id])
+
+  @@map("chat_feedbacks")
+}
+
+model Notification {
+  id              String   @id @default(uuid()) @db.Uuid
+  recipientUserId String   @map("recipient_user_id") @db.Uuid
+  eventType       String   @map("event_type") @db.VarChar(50)
+  title           String   @db.VarChar(180)
+  body            String   @db.Text
+  actionUrl       String?  @map("action_url") @db.VarChar(300)
+  isRead          Boolean  @default(false) @map("is_read")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  recipient User @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([recipientUserId, isRead, createdAt])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id                String  @id @default(uuid()) @db.Uuid
+  userId            String  @unique @map("user_id") @db.Uuid
+  inAppEnabled      Boolean @default(true) @map("in_app_enabled")
+  emailEnabled      Boolean @default(true) @map("email_enabled")
+  reminderLeadHours Int     @default(24) @map("reminder_lead_hours")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+// ============================================================================
+// MODULE 5: AMT Mandinu (245062U)
+// Payments, Commissions, Refunds & Financial Reporting
+// ============================================================================
+
+model PaymentOrder {
+  id                 String            @id @default(uuid()) @db.Uuid
+  payerUserId        String            @map("payer_user_id") @db.Uuid
+  providerUserId     String            @map("provider_user_id") @db.Uuid
+  bookingType        BookingSourceType @map("booking_type")
+  bookingReferenceId String            @map("booking_reference_id") @db.Uuid
+  grossAmountLkr     Decimal           @map("gross_amount_lkr") @db.Decimal(10, 2)
+  loyaltyDiscountLkr Decimal           @default(0.00) @map("loyalty_discount_lkr") @db.Decimal(10, 2)
+  netPayableLkr      Decimal           @map("net_payable_lkr") @db.Decimal(10, 2)
+  status             PaymentStatus     @default(PENDING)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  payer               User                   @relation("PayerOrders", fields: [payerUserId], references: [id])
+  provider            User                   @relation("ProviderOrders", fields: [providerUserId], references: [id])
+  transaction         PaymentTransaction?
+  webhookLogs         WebhookEventLog[]
+  commissionLedger    CommissionLedgerEntry?
+  refundRecord        RefundRecord?
+  loyaltyTransactions LoyaltyTransaction[]
+
+  @@index([bookingType, bookingReferenceId])
+  @@index([providerUserId, status])
+  @@map("payment_orders")
+}
+
+model PaymentTransaction {
+  id               String   @id @default(uuid()) @db.Uuid
+  paymentOrderId   String   @unique @map("payment_order_id") @db.Uuid
+  gatewayName      String   @map("gateway_name") @db.VarChar(30) // "STRIPE_SANDBOX" | "PAYHERE_SANDBOX"
+  gatewayPaymentId String   @unique @map("gateway_payment_id") @db.VarChar(120)
+  amountPaidLkr    Decimal  @map("amount_paid_lkr") @db.Decimal(10, 2)
+  currency         String   @default("LKR") @db.VarChar(10)
+  paidAt           DateTime @default(now()) @map("paid_at") @db.Timestamptz(6)
+
+  paymentOrder PaymentOrder @relation(fields: [paymentOrderId], references: [id], onDelete: Cascade)
+
+  @@map("payment_transactions")
+}
+
+model WebhookEventLog {
+  id                     String   @id @default(uuid()) @db.Uuid
+  gatewayEventId         String   @unique @map("gateway_event_id") @db.VarChar(150)
+  paymentOrderId         String   @map("payment_order_id") @db.Uuid
+  eventType              String   @map("event_type") @db.VarChar(60)
+  duplicateDeliveryCount Int      @default(0) @map("duplicate_delivery_count")
+  firstProcessedAt       DateTime @default(now()) @map("first_processed_at") @db.Timestamptz(6)
+  lastReceivedAt         DateTime @default(now()) @map("last_received_at") @db.Timestamptz(6)
+
+  paymentOrder PaymentOrder @relation(fields: [paymentOrderId], references: [id], onDelete: Cascade)
+
+  @@map("webhook_event_logs")
+}
+
+model CommissionConfig {
+  id                   String   @id @default(uuid()) @db.Uuid
+  commissionPercentage Decimal  @default(10.00) @map("commission_percentage") @db.Decimal(5, 2)
+  isActive             Boolean  @default(true) @map("is_active")
+  updatedByAdminId     String   @map("updated_by_admin_id") @db.Uuid
+  effectiveFrom        DateTime @default(now()) @map("effective_from") @db.Timestamptz(6)
+
+  updatedByAdmin User @relation(fields: [updatedByAdminId], references: [id])
+
+  @@map("commission_configs")
+}
+
+model CommissionLedgerEntry {
+  id                     String   @id @default(uuid()) @db.Uuid
+  paymentOrderId         String   @unique @map("payment_order_id") @db.Uuid
+  providerUserId         String   @map("provider_user_id") @db.Uuid
+  grossAmountLkr         Decimal  @map("gross_amount_lkr") @db.Decimal(10, 2)
+  commissionRatePct      Decimal  @default(10.00) @map("commission_rate_pct") @db.Decimal(5, 2)
+  platformCommissionLkr  Decimal  @map("platform_commission_lkr") @db.Decimal(10, 2)
+  providerNetEarningsLkr Decimal  @map("provider_net_earnings_lkr") @db.Decimal(10, 2)
+  adjustedCommissionLkr  Decimal  @map("adjusted_commission_lkr") @db.Decimal(10, 2)
+  adjustedProviderNetLkr Decimal  @map("adjusted_provider_net_lkr") @db.Decimal(10, 2)
+  recordedAt             DateTime @default(now()) @map("recorded_at") @db.Timestamptz(6)
+
+  paymentOrder PaymentOrder @relation(fields: [paymentOrderId], references: [id], onDelete: Cascade)
+  provider     User         @relation(fields: [providerUserId], references: [id])
+
+  @@index([providerUserId, recordedAt])
+  @@map("commission_ledger_entries")
+}
+
+model LoyaltyAccount {
+  id             String   @id @default(uuid()) @db.Uuid
+  playerUserId   String   @unique @map("player_user_id") @db.Uuid
+  pointsBalance  Int      @default(0) @map("points_balance")
+  lifetimePoints Int      @default(0) @map("lifetime_points")
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  player       User                 @relation(fields: [playerUserId], references: [id], onDelete: Cascade)
+  transactions LoyaltyTransaction[]
+
+  @@map("loyalty_accounts")
+}
+
+model LoyaltyTransaction {
+  id               String   @id @default(uuid()) @db.Uuid
+  loyaltyAccountId String   @map("loyalty_account_id") @db.Uuid
+  paymentOrderId   String   @map("payment_order_id") @db.Uuid
+  pointsDelta      Int      @map("points_delta")
+  reason           String   @db.VarChar(80)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  loyaltyAccount LoyaltyAccount @relation(fields: [loyaltyAccountId], references: [id], onDelete: Cascade)
+  paymentOrder   PaymentOrder   @relation(fields: [paymentOrderId], references: [id])
+
+  @@map("loyalty_transactions")
+}
+
+model RefundRecord {
+  id                      String   @id @default(uuid()) @db.Uuid
+  paymentOrderId          String   @unique @map("payment_order_id") @db.Uuid
+  cancellationTierPct     Decimal  @map("cancellation_tier_pct") @db.Decimal(5, 2)
+  refundAmountLkr         Decimal  @map("refund_amount_lkr") @db.Decimal(10, 2)
+  commissionReversedLkr   Decimal  @map("commission_reversed_lkr") @db.Decimal(10, 2)
+  providerShareDeductedLkr Decimal @map("provider_share_deducted_lkr") @db.Decimal(10, 2)
+  gatewayRefundId         String   @map("gateway_refund_id") @db.VarChar(120)
+  processedAt             DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  paymentOrder PaymentOrder @relation(fields: [paymentOrderId], references: [id], onDelete: Cascade)
+
+  @@map("refund_records")
+}
